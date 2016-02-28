@@ -1,45 +1,83 @@
 <#
-	Add comment based help
+	.SYNOPSIS
+		This function will by default remove all user profiles older than 30 days.
+	
+	.DESCRIPTION
+		The function takes in a number of days and then removes all profiles which are as old or older than the number of days.
+
+	.PARAMETER DaysBeforeDeletion
+		An integer representing how old a profile can be before it's removed.
+
+	.EXAMPLE
+		.\Remove-OldUserProfiles.ps1
+
+		Running without any additional input will simply remove all profiles older than 30 days on the computer.
+
+	.EXAMPLE
+		.\Remove-OldUserProfiles.ps1 -DaysBeforeDeletion 90
+		
+		This will remove all the profiles which are 90 days or older.
+
+	.LINK
+		http://blog.jeffbolduan.com/powershell-how-to-remove-old-windows-user-profiles/
+
+	.NOTES
+		Created by: Jeff Bolduan
+		Last Updated: 2/28/2016
+		Function: Remove-OldUserProfiles
 #>
 [CmdletBinding()]
 param(
 	[Parameter(Mandatory=$false)][int]$DaysBeforeDeletion = 30
 )
 begin {
-	Write-Verbose -Message "Starting to remove old profiles."
-} process {
-	# User profiles which should never be removed regardless of age.
-	$NeverDelete = @{
-		"Administrator" = "";
-		"Public" = "";
-		"LocalService" = "";
-		"NetworkService" = "";
-		"All Users" = "";
-		"Default" = "";
-		"Default User" = ""
+	if(-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+		Write-Warning -Message "You need to run this script with local administrator privledges."
+		break
 	}
+	Write-Verbose -Message "Starting to remove old profiles."
 
-	$OldUserProfiles = @(Get-ChildItem -Force "$($env:SYSTEMDRIVE)\Users" | Where-Object { ((Get-Date)-$_.LastWriteTime).Days -ge $DaysBeforeDeletion } | Where-Object {
+	# User profiles which should never be removed regardless of age.
+	$NeverDelete = @(
+		"Administrator",
+		"Public",
+		"LocalService",
+		"NetworkService",
+		"All Users",
+		"Default",
+		"Default User"
+	)
+} process {
+	# Get all the user folders, the filter those by folders which have a 
+	# last write time which is greater than or equal to the number of days
+	# before deletions which has been sent to the script as a parameter.  
+	# Then filter the objects to remove any that match our list of profiles
+	# Which we never want to delete.
+	$OldUserProfiles = @(Get-ChildItem -Force "$($env:SYSTEMDRIVE)\Users" | 
+		Where-Object { ((Get-Date)-$_.LastWriteTime).Days -ge $DaysBeforeDeletion } | 
+		Where-Object {
 		$User = $_
-
-		$NeverDelete.GetEnumerator() | ForEach-Object {
-			if($User -match $_.Key) {
-				$User = $User -replace $_.Key, $_.Value
-			}
+		
+		if($NeverDelete.Contains($User.ToString())) {
+			$User = $User -replace $User.ToString(), ""
 		}
+
 		$User
 	} | Where-Object { $_.PSIsContainer })
 
-	$NumProfiles = $OldUserProfiles.Count
-
-	Set-Location "C:\Users"
-	$OldUserProfiles.Count
-	$i = 0
-	do {
-		#(Get-WmiObject Win32_UserProfile | where { $_.LocalPath -like "*\${OldUserProfiles[$i])*}"}).Delete
-		#Remove-item -Force -Recurse $OldUserProfiles[$i]
-		$i++
-	} until($i -ge $NumProfiles)
+	# Now go through each user profile and then remove the profile out of win32_userprofile
+	# and remove their folder.  This completely removes them from the system and should
+	# get around the issue with temporary profiles being created or errors from the system
+	# having a record of the profiles existence.
+	foreach($UserProfile in $OldUserProfiles) {
+		try {
+			(Get-WmiObject Win32_UserProfile | Where-Object { $_.LocalPath -like "*$($UserProfile.FullName)*"}).Delete()
+			Remove-item -Path $UserProfile.FullName -Force -Recurse
+		} catch {
+			Write-Error -Message "There was an error removing the user profile $($UserProfile.Name)."
+			Write-Error -Message $_.Exception.Message
+		}
+	}
 } end {
 	Write-Verbose -Message "User profile folders cleanup complete."
 }
